@@ -1,0 +1,27 @@
+# Swift Package Manager / build output
+.build/
+build/
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+Package.resolved
+
+# macOS
+.DS_Store
+*.swp
+
+# Xcode user state
+*.xcuserstate
+xcuserdata/
+
+# Local development notes (personal usage data — never publish)
+HANDOFF.md
+
+# Signing / secrets (defensive — none are used, but never commit these)
+*.p12
+*.pem
+*.mobileprovision
+*.cer
+secrets.*
+.env
+.env.*
