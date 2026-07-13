@@ -1,5 +1,4 @@
 import Foundation
-import Security
 
 /// Official account usage: the same numbers Claude Code's /usage screen shows.
 struct OfficialQuota: Codable, Equatable {
@@ -61,35 +60,84 @@ struct ClaudeQuotaFetcher {
 
     // MARK: - Keychain
 
+    // Last good token, kept in memory so a transient CLI read failure (locked
+    // keychain, slow spawn) degrades to "slightly stale" instead of "blank".
+    private static let cacheLock = NSLock()
+    nonisolated(unsafe) private static var cachedToken: String?
+    nonisolated(unsafe) private static var cachedTokenExpiry: Date?
+    nonisolated(unsafe) private static var cachedTokenProfile: String?
+
+    static func invalidateTokenCache() {
+        cacheLock.lock()
+        cachedToken = nil
+        cachedTokenExpiry = nil
+        cachedTokenProfile = nil
+        cacheLock.unlock()
+    }
+
     /// Reads the active Claude Code OAuth access token. claude-switch swaps
     /// this Keychain item between profiles, so this always reflects the
     /// currently active account.
+    ///
+    /// Reads only via /usr/bin/security: Claude Code writes the item through
+    /// that tool, so it is already on the item's ACL and the read is silent.
+    /// Direct SecItemCopyMatching from this (ad-hoc signed) app is never used
+    /// — it makes macOS demand the login keychain *password* on every rebuild
+    /// (or whenever the keychain is locked). A transient CLI failure, e.g. a
+    /// locked keychain right after wake, coasts on the cached token instead.
     static func readAccessToken() -> Result<String, FetchError> {
-        var query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: keychainService,
-            kSecAttrAccount as String: NSUserName(),
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
-        var item: CFTypeRef?
-        var status = SecItemCopyMatching(query as CFDictionary, &item)
-        if status == errSecItemNotFound {
-            // Retry without the account attribute in case it differs.
-            query.removeValue(forKey: kSecAttrAccount as String)
-            status = SecItemCopyMatching(query as CFDictionary, &item)
+        let activeProfile = activeProfileName()
+
+        // Drop a cached token when claude-switch moved to another profile.
+        cacheLock.lock()
+        if let activeProfile,
+           let cachedProfile = cachedTokenProfile,
+           activeProfile != cachedProfile {
+            cachedToken = nil
+            cachedTokenExpiry = nil
+            cachedTokenProfile = nil
         }
-        guard status == errSecSuccess,
-              let data = item as? Data,
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        cacheLock.unlock()
+
+        // Silent CLI read runs every time (it is cheap and fetches are already
+        // throttled) so claude-switch profile changes are picked up promptly.
+        if let out = Shell.run(
+            "/usr/bin/security",
+            arguments: ["find-generic-password", "-s", keychainService, "-w"],
+            timeout: 5
+        ), out.exitCode == 0,
+           let data = out.stdout.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8),
+           !data.isEmpty {
+            let result = extractToken(from: data)
+            if case .success = result { return result }
+            if case .failure(.tokenExpired) = result { return result }
+            // Unparseable payload: fall through to the cached token.
+        }
+
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        if let token = cachedToken, (cachedTokenExpiry ?? .distantFuture) > Date() {
+            return .success(token)
+        }
+        return .failure(.noCredentials)
+    }
+
+    /// Parses the Claude Code credentials JSON, caching a valid token.
+    private static func extractToken(from data: Data) -> Result<String, FetchError> {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let oauth = object["claudeAiOauth"] as? [String: Any],
               let token = oauth["accessToken"] as? String, !token.isEmpty else {
             return .failure(.noCredentials)
         }
-        if let expiresAt = oauth["expiresAt"] as? Double,
-           Date(timeIntervalSince1970: expiresAt / 1000) < Date() {
+        let expiry = (oauth["expiresAt"] as? Double).map { Date(timeIntervalSince1970: $0 / 1000) }
+        if let expiry, expiry < Date() {
             return .failure(.tokenExpired)
         }
+        cacheLock.lock()
+        cachedToken = token
+        cachedTokenExpiry = expiry
+        cachedTokenProfile = activeProfileName()
+        cacheLock.unlock()
         return .success(token)
     }
 
@@ -129,6 +177,11 @@ struct ClaudeQuotaFetcher {
 
         if let resultError { return .failure(.network(resultError)) }
         guard resultCode == 200, let data = resultData else {
+            if resultCode == 401 {
+                // The cached token was revoked or rotated (e.g. claude-switch
+                // changed profiles); re-read the Keychain on the next attempt.
+                invalidateTokenCache()
+            }
             return .failure(.badResponse(resultCode))
         }
         guard let quota = parse(data: data) else {

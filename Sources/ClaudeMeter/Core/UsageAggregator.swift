@@ -6,6 +6,7 @@ enum UsageAggregator {
         settings: AppSettings,
         now: Date = Date(),
         officialQuota: OfficialQuota? = nil,
+        officialWarning: String? = nil,
         extraWarnings: [String] = []
     ) -> UsageSnapshot {
         var warnings = extraWarnings
@@ -60,8 +61,26 @@ enum UsageAggregator {
             modelBreakdown: breakdown,
             quota: quota,
             officialQuota: officialQuota,
-            warnings: warnings
+            officialWarning: officialWarning,
+            warnings: warnings,
+            dailyTrend: dailyTotals(events: usageEvents, now: now)
         )
+    }
+
+    /// Token totals per calendar day for the trailing `days` days, oldest
+    /// first, including zero days so the trend chart has a fixed domain.
+    static func dailyTotals(events: [UsageEvent], now: Date, days: Int = 7) -> [DailyUsage] {
+        let calendar = Calendar.current
+        let todayStart = calendar.startOfDay(for: now)
+        var totals: [Date: Int] = [:]
+        for event in events {
+            let day = calendar.startOfDay(for: event.timestamp)
+            totals[day, default: 0] += event.totalTokens
+        }
+        return (0..<days).reversed().compactMap { offset in
+            guard let day = calendar.date(byAdding: .day, value: -offset, to: todayStart) else { return nil }
+            return DailyUsage(date: day, totalTokens: totals[day] ?? 0)
+        }
     }
 
     static func windowSnapshot(events: [UsageEvent], interval: DateInterval, settings: AppSettings) -> UsageWindowSnapshot {

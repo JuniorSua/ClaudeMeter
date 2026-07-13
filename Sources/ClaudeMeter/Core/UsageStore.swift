@@ -7,7 +7,12 @@ final class UsageStore: ObservableObject {
     @Published private(set) var snapshot: UsageSnapshot?
     @Published private(set) var isRefreshing = false
     @Published private(set) var lastError: String?
+    @Published private(set) var profileError: String?
     @Published private(set) var cliVersion: String?
+    @Published private(set) var profiles: [String] = []
+    @Published private(set) var profilePlans: [String: String] = [:]
+    @Published private(set) var activeProfile: String?
+    @Published private(set) var isSwitchingProfile = false
 
     private let settingsStore: SettingsStore
     private let cacheStore = CacheStore()
@@ -25,6 +30,7 @@ final class UsageStore: ObservableObject {
     private var fileStates: [String: FileScanState] = [:]
     private var scanWarnings: [String] = []
     private var lastOfficialQuota: OfficialQuota?
+    private var lastOfficialWarning: String?
     private var lastOfficialFetchAt: Date?
     private var officialFailureCount = 0
 
@@ -67,6 +73,7 @@ final class UsageStore: ObservableObject {
 
         refreshNow()
         detectCLI()
+        loadProfiles()
     }
 
     func stop() {
@@ -105,12 +112,14 @@ final class UsageStore: ObservableObject {
         let scanner = self.scanner
 
         let previousOfficial = lastOfficialQuota
+        let previousOfficialWarning = lastOfficialWarning
         let previousFetchAt = lastOfficialFetchAt
         let previousFailures = officialFailureCount
         let now = Date()
 
         scanQueue.async { [weak self] in
             let result = scanner.scan(directory: directory, previousStates: previousStates)
+            let activeName = ClaudeQuotaFetcher.activeProfileName()
 
             // Official account usage (same numbers as Claude Code's /usage).
             // Throttled hard: log scans fire on every file-watch event during
@@ -118,35 +127,43 @@ final class UsageStore: ObservableObject {
             // (429). Fetch at most every `officialMinInterval`, and on failure
             // back off exponentially so the app stops adding to any rate limit.
             var official = previousOfficial
-            var officialWarning: String?
+            var officialWarning = previousOfficialWarning
             var didFetch = false
             var newFailures = previousFailures
             if settings.officialUsageEnabled {
+                // A profile switch (in-app or in Terminal) makes the cached
+                // quota another account's numbers: never show them under the
+                // new profile's name, and fetch right away despite throttling.
+                let profileChanged = previousOfficial != nil && previousOfficial?.profileName != activeName
+                if profileChanged {
+                    ClaudeQuotaFetcher.invalidateTokenCache()
+                    official = nil
+                }
                 let backoff = min(Self.officialMinInterval * pow(2, Double(previousFailures)), Self.officialMaxBackoff)
-                let due = previousFetchAt == nil || now.timeIntervalSince(previousFetchAt!) >= backoff
+                let due = profileChanged || previousFetchAt == nil || now.timeIntervalSince(previousFetchAt!) >= backoff
                 if due {
                     didFetch = true
                     switch ClaudeQuotaFetcher.fetch() {
                     case .success(let quota):
                         official = quota
+                        officialWarning = nil
                         newFailures = 0
                     case .failure(let error):
                         newFailures = previousFailures + 1
+                        officialWarning = error.warning
                         // Keep showing the last good value for a long time
-                        // (reset countdowns stay accurate — they're absolute);
-                        // only warn when there is nothing usable to show.
-                        if let last = previousOfficial, now.timeIntervalSince(last.fetchedAt) < Self.officialStaleAfter {
+                        // (reset countdowns stay accurate — they're absolute),
+                        // but only if it belongs to the current profile.
+                        if !profileChanged, let last = previousOfficial, now.timeIntervalSince(last.fetchedAt) < Self.officialStaleAfter {
                             official = last
                         } else {
                             official = nil
-                            officialWarning = error.warning
                         }
                     }
-                } else {
-                    official = previousOfficial
                 }
             } else {
                 official = nil
+                officialWarning = nil
             }
 
             var merged = existingEvents
@@ -154,13 +171,13 @@ final class UsageStore: ObservableObject {
                 merged[event.id] = event
             }
             let allEvents = Array(merged.values)
-            var warnings = result.warnings
-            if let officialWarning { warnings.append(officialWarning) }
+            let warnings = result.warnings
             let snapshot = UsageAggregator.makeSnapshot(
                 events: allEvents,
                 settings: settings,
                 now: Date(),
                 officialQuota: official,
+                officialWarning: officialWarning,
                 extraWarnings: warnings
             )
 
@@ -169,13 +186,17 @@ final class UsageStore: ObservableObject {
                 self.eventsByID = merged
                 self.fileStates = result.fileStates
                 self.scanWarnings = warnings
+                self.activeProfile = activeName
                 self.lastOfficialQuota = official
+                self.lastOfficialWarning = officialWarning
                 if didFetch {
                     self.lastOfficialFetchAt = now
                     self.officialFailureCount = newFailures
                 }
                 self.snapshot = snapshot
-                self.lastError = nil
+                if self.profileError == nil {
+                    self.lastError = nil
+                }
                 self.isRefreshing = false
                 self.cacheStore.save(CacheStore.CacheData(
                     fileStates: result.fileStates,
@@ -197,13 +218,76 @@ final class UsageStore: ObservableObject {
         let settings = settingsStore.settings
         let warnings = scanWarnings
         let official = settings.officialUsageEnabled ? lastOfficialQuota : nil
+        let officialWarning = settings.officialUsageEnabled ? lastOfficialWarning : nil
         scanQueue.async { [weak self] in
             let snapshot = UsageAggregator.makeSnapshot(
                 events: events, settings: settings, now: Date(),
-                officialQuota: official, extraWarnings: warnings
+                officialQuota: official, officialWarning: officialWarning,
+                extraWarnings: warnings
             )
             DispatchQueue.main.async {
                 self?.snapshot = snapshot
+            }
+        }
+    }
+
+    // MARK: - Profiles (claude-switch)
+
+    /// Refreshes the profile list, active profile, and per-profile plan
+    /// badges (pro/max) shown in the popover.
+    func loadProfiles() {
+        scanQueue.async { [weak self] in
+            let names = ProfileSwitcher.listProfiles()
+            let active = ClaudeQuotaFetcher.activeProfileName()
+            var plans: [String: String] = [:]
+            for name in names {
+                plans[name] = ProfileSwitcher.subscription(for: name, isActive: name == active)
+            }
+            DispatchQueue.main.async {
+                self?.profiles = names
+                self?.activeProfile = active
+                self?.profilePlans = plans
+            }
+        }
+    }
+
+    /// Switches the active Claude Code login via claude-switch, then drops
+    /// the old account's quota and fetches the new one immediately.
+    /// Switching to the profile that is already marked active is allowed —
+    /// it forces a Keychain re-sync when credentials drift from `.active-profile`.
+    func switchProfile(to name: String) {
+        guard !isSwitchingProfile else { return }
+        guard profiles.contains(name) else {
+            profileError = "Unknown profile “\(name)”"
+            return
+        }
+        isSwitchingProfile = true
+        profileError = nil
+        let known = profiles
+        scanQueue.async { [weak self] in
+            let result = ProfileSwitcher.switchTo(name, knownProfiles: known)
+            let confirmedActive = ClaudeQuotaFetcher.activeProfileName()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.isSwitchingProfile = false
+                switch result {
+                case .success:
+                    self.profileError = ProfileSwitcher.claudeCLIIsRunning()
+                        ? "Claude Code is still running — it stays logged into the previous account and can mix up profile credentials. Quit it (or restart it) after switching."
+                        : nil
+                    self.activeProfile = confirmedActive ?? name
+                    ClaudeQuotaFetcher.invalidateTokenCache()
+                    // Old account's numbers are meaningless now; clear them
+                    // and lift the fetch throttle so the new ones load fast.
+                    self.lastOfficialQuota = nil
+                    self.lastOfficialWarning = nil
+                    self.lastOfficialFetchAt = nil
+                    self.officialFailureCount = 0
+                    self.refreshNow()
+                    self.loadProfiles()
+                case .failure(let reason):
+                    self.profileError = reason
+                }
             }
         }
     }

@@ -30,7 +30,18 @@ struct UsageSnapshot: Codable {
     let modelBreakdown: [ModelUsage]
     let quota: QuotaSnapshot
     let officialQuota: OfficialQuota?
+    // Why officialQuota is nil while official usage is enabled (e.g. token
+    // expired) — shown prominently instead of being buried in `warnings`.
+    let officialWarning: String?
     let warnings: [String]
+    // Daily token totals for the trailing week, oldest first (last = today).
+    let dailyTrend: [DailyUsage]
+}
+
+struct DailyUsage: Codable, Identifiable, Equatable {
+    let date: Date
+    let totalTokens: Int
+    var id: Date { date }
 }
 
 struct UsageWindowSnapshot: Codable {

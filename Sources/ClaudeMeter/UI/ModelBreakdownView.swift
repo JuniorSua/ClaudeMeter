@@ -29,7 +29,7 @@ struct ModelBreakdownView: View {
                         RoundedRectangle(cornerRadius: 2)
                             .fill(Color(nsColor: .tertiaryLabelColor).opacity(0.3))
                         RoundedRectangle(cornerRadius: 2)
-                            .fill(Color.accentColor.opacity(0.8))
+                            .fill(Viz.sequential)
                             .frame(width: max(2, geo.size.width * fraction))
                     }
                 }

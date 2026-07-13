@@ -5,16 +5,38 @@ import Foundation
 enum Shell {
     struct Output {
         let stdout: String
+        let stderr: String
         let exitCode: Int32
+    }
+
+    /// PATH and HOME that GUI-launched menu bar apps often lack. claude-switch
+    /// calls `claude`, `python3`, and `security` — the first two need Homebrew
+    /// on PATH when a profile token triggers an auto-refresh during switch.
+    static func loginEnvironment() -> [String: String] {
+        var env = ProcessInfo.processInfo.environment
+        let home = env["HOME"] ?? FileManager.default.homeDirectoryForCurrentUser.path
+        env["HOME"] = home
+        if env["USER"] == nil { env["USER"] = NSUserName() }
+        let extras = [
+            "\(home)/.npm-global/bin",
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "\(home)/.local/bin"
+        ]
+        let existing = env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
+        env["PATH"] = (extras + [existing]).joined(separator: ":")
+        return env
     }
 
     static func run(_ executable: String, arguments: [String] = [], timeout: TimeInterval = 3) -> Output? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
+        process.environment = loginEnvironment()
         let pipe = Pipe()
+        let errPipe = Pipe()
         process.standardOutput = pipe
-        process.standardError = Pipe()
+        process.standardError = errPipe
         process.standardInput = FileHandle.nullDevice
 
         do {
@@ -32,8 +54,10 @@ enum Shell {
             return nil
         }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
         return Output(
             stdout: String(data: data, encoding: .utf8) ?? "",
+            stderr: String(data: errData, encoding: .utf8) ?? "",
             exitCode: process.terminationStatus
         )
     }

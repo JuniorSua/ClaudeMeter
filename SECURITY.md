@@ -9,10 +9,14 @@ handles your data and how to report a vulnerability.
   no API keys or tokens.
 - **Reading your Claude login:** when "official account usage" is enabled,
   ClaudeMeter reads your existing Claude Code OAuth access token from the macOS
-  Keychain (item `Claude Code-credentials`) at runtime. macOS prompts you to
-  approve this access the first time. The token is used only to authorize a
-  single request and is **never written to disk, logged, or included in the
-  local cache.**
+  Keychain (item `Claude Code-credentials`) at runtime, via Apple's
+  `/usr/bin/security` tool — the same tool Claude Code's ecosystem uses to
+  store it — so there is no permission pop-up and the app never sees or asks
+  for your keychain password. The read is silent and read-only; the token is
+  used only to authorize the usage request and is **never written to disk,
+  logged, or included in the local cache.** Profile switching (via
+  `claude-switch`) likewise runs entirely through that CLI; ClaudeMeter itself
+  never writes keychain items.
 - **Network:** the only outbound request is an HTTPS `GET` to Anthropic's
   official usage endpoint (`https://api.anthropic.com/api/oauth/usage`) with the
   bearer token in the `Authorization` header. No log content, prompt text, or

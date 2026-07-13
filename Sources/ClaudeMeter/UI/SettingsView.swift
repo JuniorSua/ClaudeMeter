@@ -31,7 +31,7 @@ struct SettingsView: View {
                 get: { settingsStore.settings.officialUsageEnabled },
                 set: { settingsStore.settings.officialUsageEnabled = $0 }
             ))
-            Text("Shows the same session/weekly percentages as Claude Code's /usage, for the active claude-switch profile. Requires Keychain access to your Claude Code login (approve \"Always Allow\" when asked).")
+            Text("Shows the same session/weekly percentages as Claude Code's /usage, for the active claude-switch profile. Reads your Claude Code login from the Keychain silently — no permission prompt.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Toggle("Launch at login", isOn: Binding(
