@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import ServiceManagement
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let settingsStore = SettingsStore()
@@ -17,7 +18,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             openSettings: { [weak self] in self?.showSettings() }
         )
         usageStore.start()
+        reconcileLaunchAtLogin()
         scheduleDebugSnapshotIfRequested()
+    }
+
+    /// Keeps the system login item in line with the saved setting. Covers
+    /// registrations lost to reinstalls/moves of the bundle and lets the
+    /// setting be flipped outside the UI; only meaningful when running from
+    /// a real .app bundle (e.g. /Applications).
+    private func reconcileLaunchAtLogin() {
+        guard settingsStore.settings.launchAtLogin else { return }
+        let service = SMAppService.mainApp
+        guard service.status != .enabled else { return }
+        do {
+            try service.register()
+            AppLog.general.log("Launch-at-login re-registered (status was \(service.status.rawValue))")
+        } catch {
+            AppLog.general.log("Launch-at-login registration failed: \(error.localizedDescription)")
+        }
     }
 
     /// Debug aid: CLAUDEMETER_SNAPSHOT=/path.png renders the popover view to

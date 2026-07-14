@@ -11,6 +11,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/ClaudeMeter "$APP/Contents/MacOS/ClaudeMeter"
 cp Sources/ClaudeMeter/Resources/Info.plist "$APP/Contents/Info.plist"
+cp Sources/ClaudeMeter/Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 # Ad-hoc sign. Keychain reads go through /usr/bin/security (already on the
 # Claude Code credential's ACL), so rebuilds do not trigger keychain prompts.

@@ -8,7 +8,7 @@ let package = Package(
         .executableTarget(
             name: "ClaudeMeter",
             path: "Sources/ClaudeMeter",
-            exclude: ["Resources/Info.plist"],
+            exclude: ["Resources/Info.plist", "Resources/AppIcon.icns"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .testTarget(
