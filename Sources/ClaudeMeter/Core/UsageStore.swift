@@ -118,7 +118,15 @@ final class UsageStore: ObservableObject {
         let now = Date()
 
         scanQueue.async { [weak self] in
-            let result = scanner.scan(directory: directory, previousStates: previousStates)
+            // Scan the main directory plus any isolated claude-switch profile
+            // dirs (each holds its own logs); events dedup by id.
+            var result = scanner.scan(directory: directory, previousStates: previousStates)
+            for extra in Self.extraScanRoots(mainDirectory: directory) {
+                let more = scanner.scan(directory: extra, previousStates: previousStates)
+                result.events.append(contentsOf: more.events)
+                result.fileStates.merge(more.fileStates) { _, new in new }
+                result.warnings.append(contentsOf: more.warnings)
+            }
             let activeName = ClaudeQuotaFetcher.activeProfileName()
 
             // Official account usage (same numbers as Claude Code's /usage).
@@ -231,6 +239,24 @@ final class UsageStore: ObservableObject {
         }
     }
 
+    /// Isolated claude-switch profile dirs that hold their own Claude logs.
+    /// Dirs that resolve to the main directory (e.g. a `personal` symlink to
+    /// ~/.claude) are skipped so files are not scanned twice.
+    static func extraScanRoots(mainDirectory: String) -> [String] {
+        let fm = FileManager.default
+        let mainResolved = URL(fileURLWithPath: (mainDirectory as NSString).expandingTildeInPath)
+            .resolvingSymlinksInPath().path
+        guard let names = try? fm.contentsOfDirectory(atPath: ProfileSwitcher.profilesRoot) else { return [] }
+        return names.sorted().compactMap { name in
+            let dir = ProfileSwitcher.profileDirectory(name)
+            let resolved = URL(fileURLWithPath: dir).resolvingSymlinksInPath().path
+            var isDir: ObjCBool = false
+            guard resolved != mainResolved,
+                  fm.fileExists(atPath: resolved, isDirectory: &isDir), isDir.boolValue else { return nil }
+            return dir
+        }
+    }
+
     // MARK: - Profiles (claude-switch)
 
     /// Refreshes the profile list, active profile, and per-profile plan
@@ -272,7 +298,10 @@ final class UsageStore: ObservableObject {
                 self.isSwitchingProfile = false
                 switch result {
                 case .success:
-                    self.profileError = ProfileSwitcher.claudeCLIIsRunning()
+                    // Only keychain mode shares one login slot that a running
+                    // session can clobber; isolated profiles are safe to run
+                    // concurrently.
+                    self.profileError = ProfileSwitcher.storageMode() == "keychain" && ProfileSwitcher.claudeCLIIsRunning()
                         ? "Claude Code is still running — it stays logged into the previous account and can mix up profile credentials. Quit it (or restart it) after switching."
                         : nil
                     self.activeProfile = confirmedActive ?? name
@@ -297,7 +326,8 @@ final class UsageStore: ObservableObject {
     private func startWatcher() {
         watcher?.stop()
         let root = (settingsStore.settings.claudeDirectoryPath as NSString).expandingTildeInPath
-        watcher = FileWatcher(paths: [root]) { [weak self] in
+        let paths = [root] + Self.extraScanRoots(mainDirectory: root)
+        watcher = FileWatcher(paths: paths) { [weak self] in
             self?.refreshNow()
         }
     }

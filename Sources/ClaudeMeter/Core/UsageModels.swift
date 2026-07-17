@@ -103,7 +103,7 @@ struct FileScanState: Codable {
 }
 
 struct ScanResult {
-    let events: [UsageEvent]
-    let warnings: [String]
-    let fileStates: [String: FileScanState]
+    var events: [UsageEvent]
+    var warnings: [String]
+    var fileStates: [String: FileScanState]
 }

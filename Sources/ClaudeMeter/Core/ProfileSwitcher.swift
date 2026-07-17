@@ -14,6 +14,33 @@ enum ProfileSwitcher {
         Shell.which("claude-switch")
     }
 
+    /// claude-switch storage mode, read straight from its config file so it
+    /// costs a file read, not a subprocess. "keychain" (shared login slot,
+    /// the default) or "isolated" (one CLAUDE_CONFIG_DIR per profile).
+    static func storageMode() -> String {
+        let config = NSHomeDirectory() + "/.config/claude-switch/config"
+        guard let text = try? String(contentsOfFile: config, encoding: .utf8) else { return "keychain" }
+        for line in text.split(separator: "\n") where line.hasPrefix("mode=") {
+            let mode = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+            if !mode.isEmpty { return mode }
+        }
+        return "keychain"
+    }
+
+    static var profilesRoot: String {
+        NSHomeDirectory() + "/.config/claude-switch/profiles"
+    }
+
+    static func profileDirectory(_ name: String) -> String {
+        profilesRoot + "/" + name
+    }
+
+    /// Credentials JSON for an isolated profile (written by Claude Code when
+    /// CLAUDE_CONFIG_DIR points at the profile's dir). Nil when absent.
+    static func isolatedCredentials(profile: String) -> Data? {
+        FileManager.default.contents(atPath: profileDirectory(profile) + "/.credentials.json")
+    }
+
     /// Profile names, in claude-switch's own order. Empty when claude-switch
     /// is not installed or has no saved profiles.
     static func listProfiles() -> [String] {
@@ -51,18 +78,26 @@ enum ProfileSwitcher {
         return .success
     }
 
-    /// Subscription plan ("pro", "max", …) saved in a profile's login, read
-    /// silently via /usr/bin/security. The active profile lives in the main
-    /// Claude Code item; inactive ones in per-profile items.
+    /// Subscription plan ("pro", "max", …) saved in a profile's login.
+    /// Isolated mode reads the profile dir's credentials file; keychain mode
+    /// reads the shared/per-profile items silently via /usr/bin/security.
     static func subscription(for name: String, isActive: Bool) -> String? {
+        if storageMode() == "isolated" {
+            guard let data = isolatedCredentials(profile: name) else { return nil }
+            return subscriptionType(fromCredentials: data)
+        }
         let service = isActive ? "Claude Code-credentials" : "Claude Code-credentials-\(name)"
         guard let out = Shell.run(
             "/usr/bin/security",
             arguments: ["find-generic-password", "-s", service, "-w"],
             timeout: 5
         ), out.exitCode == 0,
-              let data = out.stdout.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let data = out.stdout.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8) else { return nil }
+        return subscriptionType(fromCredentials: data)
+    }
+
+    private static func subscriptionType(fromCredentials data: Data) -> String? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let oauth = object["claudeAiOauth"] as? [String: Any] else { return nil }
         return oauth["subscriptionType"] as? String
     }

@@ -42,7 +42,12 @@ struct ClaudeQuotaFetcher {
 
         var warning: String {
             switch self {
-            case .noCredentials: return "Claude Code login not found in Keychain — official usage unavailable"
+            case .noCredentials:
+                if ProfileSwitcher.storageMode() == "isolated" {
+                    let profile = ClaudeQuotaFetcher.activeProfileName() ?? "<profile>"
+                    return "The “\(profile)” profile isn’t logged in yet — run `c \(profile)` in Terminal, then /login once"
+                }
+                return "Claude Code login not found in Keychain — official usage unavailable"
             case .tokenExpired: return "Claude login token expired — open Claude Code to refresh it"
             case .network: return "Could not reach Anthropic to fetch official usage"
             case .badResponse(let code):
@@ -99,8 +104,19 @@ struct ClaudeQuotaFetcher {
         }
         cacheLock.unlock()
 
-        // Silent CLI read runs every time (it is cheap and fetches are already
-        // throttled) so claude-switch profile changes are picked up promptly.
+        // Isolated claude-switch mode: the active profile's login lives in a
+        // credentials file inside its own CLAUDE_CONFIG_DIR — read that (a
+        // plain file read; profiles can never overwrite each other there).
+        if ProfileSwitcher.storageMode() == "isolated", let activeProfile {
+            guard let data = ProfileSwitcher.isolatedCredentials(profile: activeProfile), !data.isEmpty else {
+                return .failure(.noCredentials)
+            }
+            return extractToken(from: data)
+        }
+
+        // Keychain mode: silent CLI read runs every time (it is cheap and
+        // fetches are already throttled) so profile swaps are picked up
+        // promptly.
         if let out = Shell.run(
             "/usr/bin/security",
             arguments: ["find-generic-password", "-s", keychainService, "-w"],
