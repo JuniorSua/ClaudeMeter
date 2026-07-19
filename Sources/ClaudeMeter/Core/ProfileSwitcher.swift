@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// Thin wrapper around the claude-switch CLI (keychain mode): lists profiles
 /// and swaps the active Claude Code login. All reads/writes happen through
@@ -35,10 +36,83 @@ enum ProfileSwitcher {
         profilesRoot + "/" + name
     }
 
-    /// Credentials JSON for an isolated profile (written by Claude Code when
-    /// CLAUDE_CONFIG_DIR points at the profile's dir). Nil when absent.
+    /// Where a profile's credentials live, so refreshed tokens can be written
+    /// back to the exact slot they were read from.
+    enum CredentialStore {
+        case keychainItem(service: String)
+        case file(path: String)
+
+        func write(_ data: Data) -> Bool {
+            switch self {
+            case .keychainItem(let service):
+                guard let json = String(data: data, encoding: .utf8) else { return false }
+                let out = Shell.run(
+                    "/usr/bin/security",
+                    arguments: ["add-generic-password", "-U", "-s", service, "-a", NSUserName(), "-w", json],
+                    timeout: 5
+                )
+                return out?.exitCode == 0
+            case .file(let path):
+                do {
+                    try data.write(to: URL(fileURLWithPath: path), options: .atomic)
+                    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+                    return true
+                } catch {
+                    return false
+                }
+            }
+        }
+    }
+
+    /// Credentials JSON for an isolated profile. On macOS Claude Code stores
+    /// an isolated dir's login in a Keychain item suffixed with the first 8
+    /// hex chars of sha256(configDir); a `.credentials.json` file in the dir
+    /// is the other storage form. A profile may have several (symlinked dir,
+    /// main slot for the default dir) — the freshest token wins.
+    static func isolatedCredentialSlot(profile: String) -> (data: Data, store: CredentialStore)? {
+        let dir = profileDirectory(profile)
+        let resolved = URL(fileURLWithPath: dir).resolvingSymlinksInPath().path
+        var candidates: [(data: Data, store: CredentialStore)] = []
+
+        for path in Set([dir, resolved]) {
+            let service = "Claude Code-credentials-" + String(
+                SHA256.hash(data: Data(path.utf8)).map { String(format: "%02x", $0) }.joined().prefix(8)
+            )
+            if let data = readKeychainItem(service: service) {
+                candidates.append((data, .keychainItem(service: service)))
+            }
+            let file = path + "/.credentials.json"
+            if let data = FileManager.default.contents(atPath: file) {
+                candidates.append((data, .file(path: file)))
+            }
+        }
+        // The default ~/.claude dir also gets refreshes from plain `claude`
+        // runs (no CLAUDE_CONFIG_DIR), which land in the main Keychain slot.
+        if resolved == NSHomeDirectory() + "/.claude",
+           let data = readKeychainItem(service: "Claude Code-credentials") {
+            candidates.append((data, .keychainItem(service: "Claude Code-credentials")))
+        }
+        return candidates.max { tokenExpiry(of: $0.data) < tokenExpiry(of: $1.data) }
+    }
+
     static func isolatedCredentials(profile: String) -> Data? {
-        FileManager.default.contents(atPath: profileDirectory(profile) + "/.credentials.json")
+        isolatedCredentialSlot(profile: profile)?.data
+    }
+
+    private static func readKeychainItem(service: String) -> Data? {
+        guard let out = Shell.run(
+            "/usr/bin/security",
+            arguments: ["find-generic-password", "-s", service, "-w"],
+            timeout: 5
+        ), out.exitCode == 0 else { return nil }
+        let trimmed = out.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed.data(using: .utf8)
+    }
+
+    private static func tokenExpiry(of data: Data) -> Double {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let oauth = object["claudeAiOauth"] as? [String: Any] else { return 0 }
+        return (oauth["expiresAt"] as? Double) ?? 0
     }
 
     /// Profile names, in claude-switch's own order. Empty when claude-switch

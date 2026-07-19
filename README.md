@@ -15,10 +15,11 @@ of your local Claude Code token usage and one-click account profile switching.
   "active limit" badge and reset countdowns), today's and this week's token
   totals with a composition chart (input / output / cache write / cache read),
   a 7-day activity chart, per-model breakdown, and estimated cost.
-- **Official account usage:** reads your existing Claude Code login from the
-  macOS Keychain — **silently, no permission pop-ups, never your password** —
-  and queries Anthropic's usage endpoint: the exact numbers Claude Code shows.
-  Read-only: it never writes credentials or touches your refresh token.
+- **Official account usage:** reads your existing Claude Code login — 
+  **silently, no permission pop-ups, never your password** — and queries
+  Anthropic's usage endpoint: the exact numbers Claude Code shows. When the
+  access token expires (~8h), it refreshes it the same way Claude Code does,
+  so the meter stays live around the clock. See [SECURITY.md](SECURITY.md).
 - **Profile switching:** if you use
   [`claude-switch`](https://github.com/Mamdouh66/homebrew-tap) (`brew install
   mamdouh66/tap/claude-switch`) profiles for multiple accounts, a dropdown in
@@ -66,9 +67,9 @@ Run the tests with:
 
 - Reads official usage (session / weekly / per-model) from Anthropic's usage
   endpoint using your Keychain login, at most once every couple of minutes
-  (throttled and cached so it never hits rate limits or blanks out). If the
-  login token has expired, the popover says so and recovers automatically the
-  next time you open Claude Code.
+  (throttled and cached so it never hits rate limits or blanks out). Expired
+  access tokens are refreshed automatically with the profile's own refresh
+  token, so the meter keeps working even when Claude Code hasn't run all day.
 - Scans `~/.claude/**/*.jsonl` incrementally (per-file byte offsets, `uuid`-based
   dedup) for local token/cost metadata, aggregated by session window / local day
   / configurable week, and charted over the trailing 7 days.

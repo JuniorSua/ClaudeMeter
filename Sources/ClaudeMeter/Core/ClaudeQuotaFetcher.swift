@@ -104,14 +104,15 @@ struct ClaudeQuotaFetcher {
         }
         cacheLock.unlock()
 
-        // Isolated claude-switch mode: the active profile's login lives in a
-        // credentials file inside its own CLAUDE_CONFIG_DIR — read that (a
-        // plain file read; profiles can never overwrite each other there).
+        // Isolated claude-switch mode: the active profile's login lives in
+        // its own CLAUDE_CONFIG_DIR slot — read that (profiles can never
+        // overwrite each other there).
         if ProfileSwitcher.storageMode() == "isolated", let activeProfile {
-            guard let data = ProfileSwitcher.isolatedCredentials(profile: activeProfile), !data.isEmpty else {
+            guard let slot = ProfileSwitcher.isolatedCredentialSlot(profile: activeProfile),
+                  !slot.data.isEmpty else {
                 return .failure(.noCredentials)
             }
-            return extractToken(from: data)
+            return tokenRefreshingIfExpired(from: slot.data, store: slot.store)
         }
 
         // Keychain mode: silent CLI read runs every time (it is cheap and
@@ -124,7 +125,10 @@ struct ClaudeQuotaFetcher {
         ), out.exitCode == 0,
            let data = out.stdout.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8),
            !data.isEmpty {
-            let result = extractToken(from: data)
+            let result = tokenRefreshingIfExpired(
+                from: data,
+                store: .keychainItem(service: keychainService)
+            )
             if case .success = result { return result }
             if case .failure(.tokenExpired) = result { return result }
             // Unparseable payload: fall through to the cached token.
@@ -136,6 +140,48 @@ struct ClaudeQuotaFetcher {
             return .success(token)
         }
         return .failure(.noCredentials)
+    }
+
+    /// Extracts the access token; when it has expired (or the API rejected
+    /// it), mints a fresh one from the refresh token — like Claude Code does
+    /// — and writes it back to the slot it came from, so usage stays live
+    /// overnight without opening Claude Code.
+    private static func tokenRefreshingIfExpired(
+        from data: Data,
+        store: ProfileSwitcher.CredentialStore
+    ) -> Result<String, FetchError> {
+        var result = extractToken(from: data)
+        let rejected = consumeRefreshRequest()
+        if rejected || isExpired(result) {
+            if let refreshed = TokenRefresher.refresh(credentials: data) {
+                _ = store.write(refreshed)
+                result = extractToken(from: refreshed)
+            }
+        }
+        return result
+    }
+
+    private static func isExpired(_ result: Result<String, FetchError>) -> Bool {
+        if case .failure(.tokenExpired) = result { return true }
+        return false
+    }
+
+    // Set when the usage endpoint returns 401 despite an unexpired-looking
+    // token (revoked out from under us): the next read forces a refresh.
+    nonisolated(unsafe) private static var refreshRequested = false
+
+    static func requestTokenRefresh() {
+        cacheLock.lock()
+        refreshRequested = true
+        cacheLock.unlock()
+    }
+
+    private static func consumeRefreshRequest() -> Bool {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        let value = refreshRequested
+        refreshRequested = false
+        return value
     }
 
     /// Parses the Claude Code credentials JSON, caching a valid token.
@@ -194,9 +240,10 @@ struct ClaudeQuotaFetcher {
         if let resultError { return .failure(.network(resultError)) }
         guard resultCode == 200, let data = resultData else {
             if resultCode == 401 {
-                // The cached token was revoked or rotated (e.g. claude-switch
-                // changed profiles); re-read the Keychain on the next attempt.
+                // The token was revoked or rotated out from under us: drop
+                // the cache and force a refresh-token mint on the next read.
                 invalidateTokenCache()
+                requestTokenRefresh()
             }
             return .failure(.badResponse(resultCode))
         }
