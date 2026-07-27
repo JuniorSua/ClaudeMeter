@@ -109,11 +109,11 @@ struct PopoverView: View {
         }
     }
 
-    /// One-click claude-switch profile picker. Hidden when claude-switch is
-    /// not installed or has no saved profiles.
+    /// One-click claude-switch profile picker. Hidden unless there are at
+    /// least two profiles — with one there is nothing to switch to.
     @ViewBuilder
     private var profileMenu: some View {
-        if !store.profiles.isEmpty {
+        if store.profiles.count > 1 {
             Menu {
                 ForEach(store.profiles, id: \.self) { name in
                     Button {
