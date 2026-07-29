@@ -61,6 +61,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     .frame(width: 320)
                 Self.writeSnapshot(of: card, size: NSSize(width: 320, height: 140), to: base + "-trend.png")
             }
+            if let efficiency = self.usageStore.snapshot?.efficiency {
+                let card = EfficiencyCard(efficiency: efficiency)
+                    .padding(12)
+                    .frame(width: 320)
+                Self.writeSnapshot(of: card, size: NSSize(width: 320, height: 260), to: base + "-efficiency.png")
+            }
             if let projects = self.usageStore.snapshot?.projectBreakdown, !projects.isEmpty {
                 let card = CardView(title: "Top Projects This Month") {
                     ProjectBreakdownView(breakdown: projects)

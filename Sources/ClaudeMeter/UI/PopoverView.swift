@@ -37,6 +37,9 @@ struct PopoverView: View {
                             }
                             currentWindowCard(snapshot)
                         }
+                        if let efficiency = snapshot.efficiency {
+                            EfficiencyCard(efficiency: efficiency)
+                        }
                         rangeCard(snapshot)
                         if snapshot.dailyTrend.contains(where: { $0.totalTokens > 0 }) {
                             CardView(title: "Last 7 Days") {

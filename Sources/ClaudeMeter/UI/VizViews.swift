@@ -133,6 +133,9 @@ struct ProjectBreakdownView: View {
                             .font(.system(size: 11, weight: .medium))
                             .lineLimit(1)
                             .truncationMode(.middle)
+                        if let score = project.efficiency {
+                            EfficiencyBadge(score: score)
+                        }
                         Spacer(minLength: 4)
                         if let cost = project.estimatedCostUSD {
                             Text(HumanFormatters.cost(cost, estimated: true))

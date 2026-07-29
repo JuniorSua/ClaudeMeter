@@ -14,6 +14,9 @@ struct ModelBreakdownView: View {
                 HStack {
                     Text(usage.model)
                         .font(.system(size: 12))
+                    if let score = usage.efficiency {
+                        EfficiencyBadge(score: score)
+                    }
                     Spacer()
                     Text(HumanFormatters.tokens(usage.totalTokens))
                         .font(.system(size: 12))
