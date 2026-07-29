@@ -14,6 +14,9 @@ struct UsageEvent: Identifiable, Hashable, Codable {
     let sessionID: String?
     let resetAt: Date?
     let rawLimitMessage: String?
+    // Working directory name the session ran in ("which project used this").
+    // Optional so caches written before this field decode cleanly.
+    var project: String?
 }
 
 enum UsageSource: String, Codable {
@@ -36,6 +39,17 @@ struct UsageSnapshot: Codable {
     let warnings: [String]
     // Daily token totals for the trailing week, oldest first (last = today).
     let dailyTrend: [DailyUsage]
+    // Calendar month to date — matches how spend is actually billed.
+    let month: UsageWindowSnapshot
+    // Which projects the month's tokens went to, largest first.
+    let projectBreakdown: [ProjectUsage]
+}
+
+struct ProjectUsage: Codable, Identifiable, Equatable {
+    let project: String
+    let totalTokens: Int
+    let estimatedCostUSD: Decimal?
+    var id: String { project }
 }
 
 struct DailyUsage: Codable, Identifiable, Equatable {

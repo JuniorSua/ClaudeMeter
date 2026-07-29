@@ -19,12 +19,14 @@ enum UsageAggregator {
         )
         let todayInterval = DateWindowCalculator.todayWindow(now: now)
         let weekInterval = DateWindowCalculator.weekWindow(now: now, weekStartsOn: settings.weekStartsOn)
+        let monthInterval = DateWindowCalculator.monthWindow(now: now)
 
         let usageEvents = events.filter { $0.totalTokens > 0 || $0.estimatedCostUSD != nil }
 
         let currentWindow = windowSnapshot(events: usageEvents, interval: DateInterval(start: shortInterval.start, end: now), settings: settings)
         let today = windowSnapshot(events: usageEvents, interval: todayInterval, settings: settings)
         let week = windowSnapshot(events: usageEvents, interval: weekInterval, settings: settings)
+        let month = windowSnapshot(events: usageEvents, interval: monthInterval, settings: settings)
 
         let breakdown = modelBreakdown(events: usageEvents.filter { weekInterval.start <= $0.timestamp && $0.timestamp <= now }, settings: settings)
 
@@ -63,8 +65,46 @@ enum UsageAggregator {
             officialQuota: officialQuota,
             officialWarning: officialWarning,
             warnings: warnings,
-            dailyTrend: dailyTotals(events: usageEvents, now: now)
+            dailyTrend: dailyTotals(events: usageEvents, now: now),
+            month: month,
+            projectBreakdown: projectBreakdown(
+                events: usageEvents.filter { monthInterval.start <= $0.timestamp && $0.timestamp <= now },
+                settings: settings
+            )
         )
+    }
+
+    /// Token/cost totals per project, largest first, with the tail folded into
+    /// "Other" so the card stays readable.
+    static func projectBreakdown(
+        events: [UsageEvent],
+        settings: AppSettings,
+        limit: Int = 4
+    ) -> [ProjectUsage] {
+        var tokens: [String: Int] = [:]
+        var costs: [String: Decimal] = [:]
+        var hasCost: Set<String> = []
+        for event in events {
+            guard let project = event.project, !project.isEmpty else { continue }
+            tokens[project, default: 0] += event.totalTokens
+            if let cost = eventCost(event, settings: settings) {
+                costs[project, default: 0] += cost
+                hasCost.insert(project)
+            }
+        }
+        let ranked = tokens
+            .map { ProjectUsage(project: $0.key, totalTokens: $0.value,
+                                estimatedCostUSD: hasCost.contains($0.key) ? costs[$0.key] : nil) }
+            .sorted { ($0.totalTokens, $1.project) > ($1.totalTokens, $0.project) }
+        guard ranked.count > limit else { return ranked }
+        let head = Array(ranked.prefix(limit))
+        let tail = ranked.dropFirst(limit)
+        let tailCosts = tail.compactMap(\.estimatedCostUSD)
+        return head + [ProjectUsage(
+            project: "Other",
+            totalTokens: tail.reduce(0) { $0 + $1.totalTokens },
+            estimatedCostUSD: tailCosts.isEmpty ? nil : tailCosts.reduce(0, +)
+        )]
     }
 
     /// Token totals per calendar day for the trailing `days` days, oldest

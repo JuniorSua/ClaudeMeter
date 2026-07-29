@@ -54,12 +54,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Self.writeSnapshot(of: view, size: NSSize(width: 320, height: 600), to: path)
             // The trend card can sit below the popover fold; render it alone
             // too so layout checks cover it.
+            let base = (path as NSString).deletingPathExtension
             if let trend = self.usageStore.snapshot?.dailyTrend {
                 let card = CardView(title: "Last 7 Days") { DailyTrendChart(days: trend) }
                     .padding(12)
                     .frame(width: 320)
-                Self.writeSnapshot(of: card, size: NSSize(width: 320, height: 140),
-                                   to: (path as NSString).deletingPathExtension + "-trend.png")
+                Self.writeSnapshot(of: card, size: NSSize(width: 320, height: 140), to: base + "-trend.png")
+            }
+            if let projects = self.usageStore.snapshot?.projectBreakdown, !projects.isEmpty {
+                let card = CardView(title: "Top Projects This Month") {
+                    ProjectBreakdownView(breakdown: projects)
+                }
+                .padding(12)
+                .frame(width: 320)
+                Self.writeSnapshot(of: card, size: NSSize(width: 320, height: 190), to: base + "-projects.png")
             }
         }
     }

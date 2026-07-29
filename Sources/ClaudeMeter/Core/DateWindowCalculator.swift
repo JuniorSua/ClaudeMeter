@@ -13,6 +13,14 @@ enum DateWindowCalculator {
         return DateInterval(start: interval.start, end: now)
     }
 
+    /// Calendar month to date — the window that matches how subscriptions and
+    /// spending are actually billed.
+    static func monthWindow(now: Date, calendar: Calendar = .current) -> DateInterval {
+        let start = calendar.date(from: calendar.dateComponents([.year, .month], from: now))
+            ?? calendar.startOfDay(for: now)
+        return DateInterval(start: start, end: now)
+    }
+
     /// The current short usage window, plus how its boundary was determined.
     /// A detected reset timestamp anchors the window end; otherwise it is a
     /// rolling window ending now.

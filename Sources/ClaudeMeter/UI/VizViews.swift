@@ -18,6 +18,10 @@ enum Viz {
     /// Sequential hue (blue step 450/400) for single-series magnitude marks.
     static let sequential = dynamic(light: 0x2A78D6, dark: 0x3987E5)
 
+    /// Reserved status steps — never reused for a series. Always paired with
+    /// an icon and label so state is never carried by color alone.
+    static let statusWarning = dynamic(light: 0xC2410C, dark: 0xFAB219)
+
     private static func dynamic(light: UInt32, dark: UInt32) -> Color {
         Color(nsColor: NSColor(name: nil) { appearance in
             let hex = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
@@ -111,6 +115,59 @@ struct CompositionLegend: View {
     }
 }
 
+// MARK: - Projects (magnitude, low → high)
+
+/// Which projects consumed the month's tokens. Ranked bars in one hue —
+/// magnitude, not identity — with each project's share and cost inline.
+struct ProjectBreakdownView: View {
+    let breakdown: [ProjectUsage]
+
+    var body: some View {
+        let peak = max(1, breakdown.map(\.totalTokens).max() ?? 1)
+        let total = max(1, breakdown.reduce(0) { $0 + $1.totalTokens })
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(breakdown) { project in
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(project.project)
+                            .font(.system(size: 11, weight: .medium))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 4)
+                        if let cost = project.estimatedCostUSD {
+                            Text(HumanFormatters.cost(cost, estimated: true))
+                                .font(.system(size: 10))
+                                .monospacedDigit()
+                                .foregroundStyle(.tertiary)
+                        }
+                        Text(HumanFormatters.tokens(project.totalTokens))
+                            .font(.system(size: 10))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                        Text(HumanFormatters.percent(Double(project.totalTokens) / Double(total) * 100))
+                            .font(.system(size: 10, weight: .medium))
+                            .monospacedDigit()
+                            .frame(width: 34, alignment: .trailing)
+                    }
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(Color(nsColor: .tertiaryLabelColor).opacity(0.25))
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(project.project == "Other"
+                                      ? Viz.sequential.opacity(0.4)
+                                      : Viz.sequential)
+                                .frame(width: max(2, geo.size.width * CGFloat(project.totalTokens) / CGFloat(peak)))
+                        }
+                    }
+                    .frame(height: 4)
+                }
+                .help("\(project.project): \(HumanFormatters.tokensExact(project.totalTokens)) tokens this month")
+            }
+        }
+    }
+}
+
 // MARK: - Daily trend (change over time, single series)
 
 /// Seven thin columns, one hue; today is emphasized and carries the only
@@ -127,8 +184,35 @@ struct DailyTrendChart: View {
 
     var body: some View {
         let peak = max(1, days.map(\.totalTokens).max() ?? 1)
+        let average = days.isEmpty ? 0 : days.reduce(0) { $0 + $1.totalTokens } / days.count
         VStack(spacing: 3) {
-            HStack(alignment: .bottom, spacing: 6) {
+            ZStack(alignment: .bottom) {
+                // Daily-average reference line: gives each bar something to be
+                // "above" or "below" instead of only comparing to the peak.
+                if average > 0 {
+                    VStack(spacing: 0) {
+                        Spacer()
+                        HStack(spacing: 4) {
+                            // Label first with layout priority — a greedy
+                            // Rectangle otherwise takes the whole row and
+                            // squeezes the text to zero width.
+                            Text("avg \(HumanFormatters.tokens(average))")
+                                .font(.system(size: 8))
+                                .foregroundStyle(.secondary)
+                                .fixedSize()
+                                .layoutPriority(1)
+                            Rectangle()
+                                .fill(Color(nsColor: .separatorColor))
+                                .frame(height: 1)
+                                .frame(maxWidth: .infinity)
+                        }
+                        // Bars top out at 44pt inside the 60pt plot, so the
+                        // reference line uses the same scale.
+                        .padding(.bottom, 44 * CGFloat(average) / CGFloat(peak))
+                    }
+                    .frame(height: 60)
+                }
+                HStack(alignment: .bottom, spacing: 6) {
                 ForEach(days) { day in
                     let isToday = Calendar.current.isDateInToday(day.date)
                     VStack(spacing: 2) {
@@ -144,9 +228,10 @@ struct DailyTrendChart: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .bottom)
                     .help("\(day.date.formatted(date: .abbreviated, time: .omitted)): \(HumanFormatters.tokensExact(day.totalTokens)) tokens")
+                    }
                 }
+                .frame(height: 60, alignment: .bottom)
             }
-            .frame(height: 60, alignment: .bottom)
             Rectangle()
                 .fill(Color(nsColor: .separatorColor))
                 .frame(height: 1)

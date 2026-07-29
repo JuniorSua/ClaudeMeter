@@ -6,6 +6,23 @@ struct PopoverView: View {
     let openSettings: () -> Void
     let quit: () -> Void
 
+    /// Which range the token card shows. One card with a segmented control
+    /// beats three stacked cards: same data, a third of the scrolling, and
+    /// the comparison is a click rather than a scroll.
+    enum Range: String, CaseIterable, Identifiable {
+        case today, week, month
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .today: return "Today"
+            case .week: return "Week"
+            case .month: return "Month"
+            }
+        }
+    }
+
+    @State private var range: Range = .today
+
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
@@ -20,11 +37,15 @@ struct PopoverView: View {
                             }
                             currentWindowCard(snapshot)
                         }
-                        windowCard(title: "Today", window: snapshot.today)
-                        windowCard(title: "This Week", window: snapshot.week)
+                        rangeCard(snapshot)
                         if snapshot.dailyTrend.contains(where: { $0.totalTokens > 0 }) {
                             CardView(title: "Last 7 Days") {
                                 DailyTrendChart(days: snapshot.dailyTrend)
+                            }
+                        }
+                        if !snapshot.projectBreakdown.isEmpty {
+                            CardView(title: "Top Projects This Month") {
+                                ProjectBreakdownView(breakdown: snapshot.projectBreakdown)
                             }
                         }
                         if !snapshot.modelBreakdown.isEmpty {
@@ -141,6 +162,43 @@ struct PopoverView: View {
         }
     }
 
+    private static let monthFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.setLocalizedDateFormatFromTemplate("MMMM")
+        return f
+    }()
+
+    /// Pace is shown for the one limit that actually binds — the active one,
+    /// else the highest percentage — so the card stays a single clear signal
+    /// instead of three competing forecasts.
+    private func paceForBindingLimit(
+        _ official: OfficialQuota,
+        limit: OfficialQuota.Limit,
+        now: Date
+    ) -> QuotaPace? {
+        let binding = official.limits.first(where: \.isActive)
+            ?? official.limits.max(by: { $0.percent < $1.percent })
+        guard binding?.id == limit.id else { return nil }
+        return QuotaPace.evaluate(limit: limit, now: now)
+    }
+
+    private func paceIcon(_ verdict: QuotaPace.Verdict) -> String {
+        switch verdict {
+        case .exhausted: return "exclamationmark.octagon.fill"
+        case .aheadOfPace: return "exclamationmark.triangle.fill"
+        case .onTrack: return "gauge.medium"
+        case .comfortable: return "checkmark.circle"
+        }
+    }
+
+    private func paceColor(_ verdict: QuotaPace.Verdict) -> Color {
+        switch verdict {
+        case .exhausted, .aheadOfPace: return Viz.statusWarning
+        case .onTrack: return .secondary
+        case .comfortable: return .secondary
+        }
+    }
+
     private func accountUsageCard(_ official: OfficialQuota, generatedAt: Date) -> some View {
         CardView(title: official.profileName.map { "Account Usage — \($0)" } ?? "Account Usage") {
             ForEach(official.limits) { limit in
@@ -160,6 +218,7 @@ struct PopoverView: View {
                             .font(.system(size: 12, weight: .semibold))
                             .monospacedDigit()
                     }
+                    let pace = paceForBindingLimit(official, limit: limit, now: generatedAt)
                     GeometryReader { geo in
                         ZStack(alignment: .leading) {
                             RoundedRectangle(cornerRadius: 3)
@@ -167,6 +226,20 @@ struct PopoverView: View {
                             RoundedRectangle(cornerRadius: 3)
                                 .fill(Color(nsColor: MeterColor.nsColor(for: limit.percent)))
                                 .frame(width: max(4, geo.size.width * min(limit.percent, 100) / 100))
+                            // Where this window lands by reset at the current
+                            // rate. Only drawn when the projection falls
+                            // inside the track — past 100% the warning text
+                            // below says it better than a pinned tick.
+                            if let pace,
+                               pace.projectedPercentAtReset > limit.percent + 2,
+                               pace.projectedPercentAtReset < 99 {
+                                let x = geo.size.width * pace.projectedPercentAtReset / 100
+                                Capsule()
+                                    .fill(Color(nsColor: .labelColor).opacity(0.7))
+                                    .frame(width: 2, height: 7)
+                                    .offset(x: min(max(x - 1, 0), geo.size.width - 2))
+                                    .help("Projected \(HumanFormatters.percent(pace.projectedPercentAtReset)) by reset")
+                            }
                         }
                     }
                     .frame(height: 5)
@@ -175,6 +248,16 @@ struct PopoverView: View {
                             .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
+                    }
+                    if let pace {
+                        HStack(spacing: 4) {
+                            Image(systemName: paceIcon(pace.verdict))
+                                .font(.system(size: 9, weight: .semibold))
+                            Text(pace.message)
+                                .font(.system(size: 10))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .foregroundStyle(paceColor(pace.verdict))
                     }
                 }
                 .padding(.bottom, 2)
@@ -244,37 +327,67 @@ struct PopoverView: View {
         }
     }
 
+    /// Token usage for the selected range: segmented control, hero total,
+    /// composition bar, legend. Replaces the old Today/Week/Month card stack.
+    private func rangeCard(_ snapshot: UsageSnapshot) -> some View {
+        let window: UsageWindowSnapshot = {
+            switch range {
+            case .today: return snapshot.today
+            case .week: return snapshot.week
+            case .month: return snapshot.month
+            }
+        }()
+        return CardView(title: rangeTitle(snapshot.generatedAt)) {
+            Picker("", selection: $range) {
+                ForEach(Range.allCases) { option in
+                    Text(option.label).tag(option)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .controlSize(.small)
+            windowBody(window)
+        }
+    }
+
+    private func rangeTitle(_ now: Date) -> String {
+        switch range {
+        case .today: return "Tokens Today"
+        case .week: return "Tokens This Week"
+        case .month: return "Tokens in \(Self.monthFormatter.string(from: now))"
+        }
+    }
+
     /// Stat tile + part-to-whole composition: hero total, thin stacked bar of
     /// the token mix, legend with exact values. Hover any segment for the
     /// precise count.
-    private func windowCard(title: String, window: UsageWindowSnapshot) -> some View {
-        CardView(title: title) {
-            HStack(alignment: .firstTextBaseline, spacing: 5) {
-                Text(HumanFormatters.tokens(window.totalTokens))
-                    .font(.system(size: 22, weight: .semibold, design: .rounded))
+    @ViewBuilder
+    private func windowBody(_ window: UsageWindowSnapshot) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 5) {
+            Text(HumanFormatters.tokens(window.totalTokens))
+                .font(.system(size: 22, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .help("\(HumanFormatters.tokensExact(window.totalTokens)) tokens")
+            Text("tokens")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            Spacer()
+            if let cost = window.estimatedCostUSD {
+                Text(HumanFormatters.cost(cost, estimated: true))
+                    .font(.system(size: 12, weight: .medium))
                     .monospacedDigit()
-                    .help("\(HumanFormatters.tokensExact(window.totalTokens)) tokens")
-                Text("tokens")
-                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                Spacer()
-                if let cost = window.estimatedCostUSD {
-                    Text(HumanFormatters.cost(cost, estimated: true))
-                        .font(.system(size: 12, weight: .medium))
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                        .help("Estimated cost")
-                }
+                    .help("Estimated cost")
             }
-            if window.totalTokens > 0 {
-                let segments = tokenSegments(window)
-                CompositionBar(segments: segments)
-                CompositionLegend(segments: segments)
-            } else {
-                Text("No activity in this window")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
-            }
+        }
+        if window.totalTokens > 0 {
+            let segments = tokenSegments(window)
+            CompositionBar(segments: segments)
+            CompositionLegend(segments: segments)
+        } else {
+            Text("No activity in this range")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
         }
     }
 

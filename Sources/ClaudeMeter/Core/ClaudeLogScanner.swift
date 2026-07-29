@@ -173,8 +173,25 @@ struct ClaudeLogScanner {
             estimatedCostUSD: cost,
             sessionID: sessionID,
             resetAt: resetAt,
-            rawLimitMessage: limitMessage
+            rawLimitMessage: limitMessage,
+            project: projectName(record: record, filePath: filePath)
         )
+    }
+
+    /// Human-readable project label: the folder name of the session's working
+    /// directory. Falls back to decoding the log's parent directory, which
+    /// Claude Code names after the path with separators replaced by dashes.
+    static func projectName(record: [String: Any], filePath: String) -> String? {
+        if let cwd = (record["cwd"] as? String) ?? (record["workingDirectory"] as? String),
+           !cwd.isEmpty {
+            let name = (cwd as NSString).lastPathComponent
+            if !name.isEmpty && name != "/" { return name }
+        }
+        let parent = ((filePath as NSString).deletingLastPathComponent as NSString).lastPathComponent
+        guard !parent.isEmpty, parent != "projects" else { return nil }
+        let trimmed = parent.hasPrefix("-") ? String(parent.dropFirst()) : parent
+        let tail = trimmed.split(separator: "-").last.map(String.init)
+        return (tail?.isEmpty == false) ? tail : nil
     }
 
     // MARK: - Limit / reset detection
